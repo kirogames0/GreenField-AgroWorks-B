@@ -1,0 +1,164 @@
+"""
+Read-only tools (Person B). These are always available regardless of
+role -- they back `check_field_status` and `get_inventory`, and their
+schemas are what tools/list returns for a field_hand session.
+
+Each schema uses real JSON Schema constraints, `required`, and
+`additionalProperties: false` per the grading rubric -- no bare
+dicts or **kwargs tools.
+"""
+
+import sqlite3
+
+
+AUTHENTICATE_SCHEMA = {
+    "name": "authenticate",
+    "description": (
+        "Authenticate a session with a worker_id. Updates the session's "
+        "role based on the worker's certification status. If role changes, "
+        "sends a notification and tool list is updated."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "worker_id": {
+                "type": "string",
+                "description": "Worker identifier, e.g. 'w1' or '1'.",
+            }
+        },
+        "required": ["worker_id"],
+        "additionalProperties": False,
+    },
+}
+
+CHECK_FIELD_STATUS_SCHEMA = {
+    "name": "check_field_status",
+    "description": (
+        "Look up the current crop stage, last chemical treatment, and "
+        "next required action for a single field. Read-only -- does not "
+        "modify any records."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "field_id": {
+                "type": "string",
+                "pattern": "^f[0-9]+$",
+                "description": "Field identifier, e.g. 'f1'.",
+            }
+        },
+        "required": ["field_id"],
+        "additionalProperties": False,
+    },
+}
+
+GET_INVENTORY_SCHEMA = {
+    "name": "get_inventory",
+    "description": (
+        "Return current on-hand quantity for a chemical, or all "
+        "chemicals in inventory if chemical_id is omitted. Read-only."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "chemical_id": {
+                "type": "string",
+                "pattern": "^chem[0-9]+$",
+                "description": "Optional. Restrict to a single chemical, e.g. 'chem2'.",
+            }
+        },
+        "required": [],
+        "additionalProperties": False,
+    },
+}
+
+GENERATE_COMPLIANCE_REPORT_SCHEMA = {
+    "name": "generate_compliance_report",
+    "description": (
+        "Generate a chemical-application compliance report for a buyer "
+        "across a date range. Long-running: reports progress per field "
+        "processed via notifications/progress."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "buyer_id": {"type": "string", "description": "Buyer identifier."},
+            "start_date": {
+                "type": "string",
+                "format": "date",
+                "description": "ISO date, inclusive, e.g. '2026-01-01'.",
+            },
+            "end_date": {
+                "type": "string",
+                "format": "date",
+                "description": "ISO date, inclusive, e.g. '2026-07-01'.",
+            },
+        },
+        "required": ["buyer_id", "start_date", "end_date"],
+        "additionalProperties": False,
+    },
+}
+
+
+def check_field_status(args: dict, cursor: sqlite3.Cursor) -> dict:
+    """
+    Look up field status by field_id (string format like 'f1').
+    Returns field info including crop, crop stage, and last treatment.
+    """
+    field_id_str = args["field_id"]
+    
+    # Convert string ID (e.g., "f1") to integer (1)
+    try:
+        field_id = int(field_id_str[1:]) if field_id_str.startswith('f') else int(field_id_str)
+    except (ValueError, IndexError):
+        raise ValueError(f"Invalid field_id format: {field_id_str}")
+    
+    cursor.execute(
+        """SELECT f.field_id, f.site_name, c.crop_name, c.growth_stage,
+                  f.last_treatment_date, f.last_treatment_chemical_id
+           FROM Fields f
+           LEFT JOIN Crops c ON f.crop_id = c.crop_id
+           WHERE f.field_id = ?""",
+        (field_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        raise ValueError(f"No such field: {field_id_str}")
+    return {
+        "field_id": f"f{row[0]}",
+        "site_name": row[1],
+        "crop": row[2],
+        "crop_stage": row[3],
+        "last_treatment_date": row[4],
+        "last_treatment_chemical_id": row[5],
+    }
+
+
+def get_inventory(args: dict, cursor: sqlite3.Cursor) -> dict:
+    """
+    Look up inventory quantities for chemicals.
+    Accepts optional chemical_id in format 'chem1'.
+    """
+    chemical_id_str = args.get("chemical_id")
+    
+    if chemical_id_str:
+        # Convert string ID (e.g., "chem2") to integer (2)
+        try:
+            chemical_id = int(chemical_id_str.replace('chem', '')) if 'chem' in chemical_id_str else int(chemical_id_str)
+        except ValueError:
+            raise ValueError(f"Invalid chemical_id format: {chemical_id_str}")
+        
+        cursor.execute(
+            "SELECT chemical_id, quantity_on_hand, unit FROM Inventory WHERE chemical_id = ?",
+            (chemical_id,),
+        )
+        rows = cursor.fetchall()
+    else:
+        cursor.execute("SELECT chemical_id, quantity_on_hand, unit FROM Inventory")
+        rows = cursor.fetchall()
+
+    return {
+        "inventory": [
+            {"chemical_id": f"chem{r[0]}", "quantity_on_hand": r[1], "unit": r[2]} for r in rows
+        ]
+    }
