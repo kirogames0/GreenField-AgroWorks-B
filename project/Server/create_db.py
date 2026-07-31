@@ -7,9 +7,15 @@ Run this once to set up the SQLite database with schema and seed data.
 import sqlite3
 import os
 
-DB_PATH = "greenfield.db"
-SCHEMA_PATH = os.path.join("..", "DB", "schema.sql")
-SEED_PATH = os.path.join("..", "DB", "seed.sql")
+# Get the project root directory (two levels up from this file)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DB_DIR = os.path.join(PROJECT_ROOT, "DB")
+
+# Database and schema paths - use absolute paths for cross-platform compatibility
+DB_PATH = os.path.join(PROJECT_ROOT, "greenfield.db")
+SCHEMA_PATH = os.path.join(DB_DIR, "schema.sql")
+SEED_PATH = os.path.join(DB_DIR, "seed.sql")
 
 def create_database():
     """Create and initialize the database."""

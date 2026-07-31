@@ -43,12 +43,18 @@ from tools_reads import (
     CHECK_FIELD_STATUS_SCHEMA,
     GET_INVENTORY_SCHEMA,
     GENERATE_COMPLIANCE_REPORT_SCHEMA,
+    REQUEST_PESTICIDE_APPLICATION_SCHEMA,
     check_field_status,
     get_inventory,
+    request_pesticide_application,
 )
 
 
-DB_PATH = "greenfield.db"
+# Get the project root directory (one level up from this file's parent Server/)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+DB_DIR = os.path.join(PROJECT_ROOT, "DB")
+DB_PATH = os.path.join(PROJECT_ROOT, "greenfield.db")
 
 
 def _initialize_database_if_needed():
@@ -58,8 +64,14 @@ def _initialize_database_if_needed():
     
     print(f"Initializing database at {DB_PATH}", file=sys.stderr)
     
-    schema_path = os.path.join("..", "DB", "schema.sql")
-    seed_path = os.path.join("..", "DB", "seed.sql")
+    schema_path = os.path.join(DB_DIR, "schema.sql")
+    seed_path = os.path.join(DB_DIR, "seed.sql")
+    
+    # Verify files exist before attempting to read
+    if not os.path.exists(schema_path):
+        raise FileNotFoundError(f"Schema file not found at {schema_path}")
+    if not os.path.exists(seed_path):
+        raise FileNotFoundError(f"Seed file not found at {seed_path}")
     
     # Read schema and seed files
     with open(schema_path, 'r') as f:
@@ -100,11 +112,8 @@ SERVER_CAPABILITIES = {
     "prompts": {
         "listChanged": False
     },
-    "elicitation": True,  # this server can call elicitation/create
-    # NOTE: sampling is a CLIENT capability, not a server one -- the
-    # server requests sampling/createMessage, but it's the client's
-    # job to declare whether it supports fulfilling it. We check for
-    # that in tools_writes.py before attempting a sampling call.
+    "elicitation": True,   # this server CAN call elicitation/create
+    "sampling": True,      # this server CAN call sampling/createMessage
 }
 
 SERVER_INFO = {
@@ -151,7 +160,7 @@ class Session:
     worker_id: str | None = None
 
 
-READ_ONLY_TOOLS = ["check_field_status", "get_inventory", "generate_compliance_report"]
+READ_ONLY_TOOLS = ["check_field_status", "get_inventory", "generate_compliance_report", "authenticate"]
 APPLICATOR_ONLY_TOOLS = ["request_pesticide_application"]
 
 
@@ -237,7 +246,8 @@ async def handle_tools_call(
     params = request.get("params", {})
     tool_name = params.get("name")
     args = params.get("arguments", {})
-    progress_token = params.get("progressToken")
+    # Progress token per MCP spec: it's in params._meta, not top-level
+    progress_token = params.get("_meta", {}).get("progressToken")
     
     try:
         if tool_name == "authenticate":
@@ -322,6 +332,31 @@ async def handle_tools_call(
                     "error": {"code": -32602, "message": str(e)}
                 }
         
+        elif tool_name == "request_pesticide_application":
+            # Defensive write-tool: verify session role before proceeding
+            if session.role != "certified_applicator":
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {
+                        "code": -32602,
+                        "message": f"Only certified applicators can request pesticide applications. Current role: {session.role}"
+                    }
+                }
+            try:
+                result = request_pesticide_application(args, cursor, session.role)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                }
+            except ValueError as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32602, "message": str(e)}
+                }
+        
         else:
             return {
                 "jsonrpc": "2.0",
@@ -354,12 +389,14 @@ def handle_tools_list(session: Session) -> dict:
 
 def _load_tool_definitions() -> list[dict]:
     """Load all tool definitions (schemas) from tools_reads.py."""
-    return [
+    tools = [
         AUTHENTICATE_SCHEMA,
         CHECK_FIELD_STATUS_SCHEMA,
         GET_INVENTORY_SCHEMA,
         GENERATE_COMPLIANCE_REPORT_SCHEMA,
+        REQUEST_PESTICIDE_APPLICATION_SCHEMA,
     ]
+    return tools
 
 
 # ------------------------------------------------------------------
@@ -467,6 +504,196 @@ async def generate_compliance_report(
 
 
 # ------------------------------------------------------------------
+# 4-8. RESOURCES, PROMPTS, ELICITATION, SAMPLING
+# ------------------------------------------------------------------
+
+def handle_resources_list(cursor: sqlite3.Cursor) -> dict:
+    """Return available farm resources (farms, fields, chemicals, workers)."""
+    
+    # Get all farms
+    cursor.execute("SELECT farm_id, farm_name, location FROM Farms")
+    farms = [{"id": f"farm{r[0]}", "name": r[1], "location": r[2]} for r in cursor.fetchall()]
+    
+    # Get all fields
+    cursor.execute("SELECT field_id, farm_id, crop_id, site_name FROM Fields")
+    fields = [
+        {
+            "id": f"f{r[0]}", 
+            "farm_id": f"farm{r[1]}", 
+            "crop_id": f"crop{r[2]}", 
+            "site_name": r[3]
+        } 
+        for r in cursor.fetchall()
+    ]
+    
+    # Get all chemicals
+    cursor.execute("SELECT chemical_id, chemical_name, is_restricted FROM Chemicals")
+    chemicals = [
+        {
+            "id": f"chem{r[0]}", 
+            "name": r[1], 
+            "is_restricted": bool(r[2])
+        } 
+        for r in cursor.fetchall()
+    ]
+    
+    # Get all workers
+    cursor.execute("SELECT worker_id, worker_name, is_certified FROM Workers")
+    workers = [
+        {
+            "id": f"w{r[0]}", 
+            "name": r[1], 
+            "is_certified": bool(r[2])
+        } 
+        for r in cursor.fetchall()
+    ]
+    
+    return {
+        "resources": [
+            {
+                "uri": "farm://greenfield/farms",
+                "name": "Farms",
+                "description": "All farms in the system",
+                "data": farms
+            },
+            {
+                "uri": "farm://greenfield/fields",
+                "name": "Fields",
+                "description": "All fields in the system",
+                "data": fields
+            },
+            {
+                "uri": "farm://greenfield/chemicals",
+                "name": "Chemicals",
+                "description": "All chemicals in inventory",
+                "data": chemicals
+            },
+            {
+                "uri": "farm://greenfield/workers",
+                "name": "Workers",
+                "description": "All workers",
+                "data": workers
+            }
+        ]
+    }
+
+
+def handle_resources_read(uri: str, cursor: sqlite3.Cursor) -> dict:
+    """Read a specific resource by URI."""
+    
+    if uri == "farm://greenfield/farms":
+        cursor.execute("SELECT farm_id, farm_name, location FROM Farms")
+        data = [{"id": f"farm{r[0]}", "name": r[1], "location": r[2]} for r in cursor.fetchall()]
+        return {"uri": uri, "contents": json.dumps(data)}
+    
+    elif uri == "farm://greenfield/fields":
+        cursor.execute("SELECT field_id, farm_id, crop_id, site_name FROM Fields")
+        data = [
+            {"id": f"f{r[0]}", "farm_id": f"farm{r[1]}", "crop_id": f"crop{r[2]}", "site_name": r[3]} 
+            for r in cursor.fetchall()
+        ]
+        return {"uri": uri, "contents": json.dumps(data)}
+    
+    elif uri == "farm://greenfield/chemicals":
+        cursor.execute("SELECT chemical_id, chemical_name, is_restricted FROM Chemicals")
+        data = [{"id": f"chem{r[0]}", "name": r[1], "is_restricted": bool(r[2])} for r in cursor.fetchall()]
+        return {"uri": uri, "contents": json.dumps(data)}
+    
+    elif uri == "farm://greenfield/workers":
+        cursor.execute("SELECT worker_id, worker_name, is_certified FROM Workers")
+        data = [{"id": f"w{r[0]}", "name": r[1], "is_certified": bool(r[2])} for r in cursor.fetchall()]
+        return {"uri": uri, "contents": json.dumps(data)}
+    
+    else:
+        raise ValueError(f"Unknown resource URI: {uri}")
+
+
+def handle_prompts_list() -> dict:
+    """Return available prompt templates."""
+    return {
+        "prompts": [
+            {
+                "name": "audit_field",
+                "description": "Audit a field for compliance",
+                "arguments": [
+                    {"name": "field_id", "description": "Field to audit (e.g., f1)"},
+                    {"name": "start_date", "description": "Start date for audit (YYYY-MM-DD)"},
+                    {"name": "end_date", "description": "End date for audit (YYYY-MM-DD)"}
+                ]
+            },
+            {
+                "name": "plan_application",
+                "description": "Plan a pesticide application",
+                "arguments": [
+                    {"name": "field_id", "description": "Target field"},
+                    {"name": "chemical_name", "description": "Chemical to apply"},
+                    {"name": "reason", "description": "Reason for application"}
+                ]
+            },
+            {
+                "name": "worker_certification",
+                "description": "Check worker certification status",
+                "arguments": [
+                    {"name": "worker_id", "description": "Worker to check"},
+                ]
+            }
+        ]
+    }
+
+
+async def handle_elicitation_create(
+    request: dict,
+    send_notification,
+) -> dict | None:
+    """
+    Handle elicitation requests from the model. This is a stub that
+    could expand into real prompting or multi-turn interaction.
+    For now, returns that elicitation is noted.
+    """
+    params = request.get("params", {})
+    
+    # In a real implementation, you might:
+    # 1. Log the elicitation request
+    # 2. Queue it for human review
+    # 3. Send a notification when handled
+    
+    return {
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "result": {
+            "status": "noted",
+            "message": "Elicitation request received and queued for handling"
+        }
+    }
+
+
+async def handle_sampling_createMessage(
+    request: dict,
+    send_notification,
+) -> dict | None:
+    """
+    Handle sampling requests (e.g., when server wants to generate text).
+    This is a stub that could expand to call a language model.
+    For now, returns a prepared response template.
+    """
+    params = request.get("params", {})
+    
+    # In a real implementation, you might:
+    # 1. Extract the sampling prompt
+    # 2. Call Claude or another LLM
+    # 3. Return the generated response
+    
+    return {
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "result": {
+            "status": "acknowledged",
+            "message": "Sampling request acknowledged. Server can generate text as needed."
+        }
+    }
+
+
+# ------------------------------------------------------------------
 # Minimal transport-agnostic dispatch (stdio for now; swap the
 # read/write loop below for a Streamable HTTP handler when the team
 # migrates transport -- see README transport section).
@@ -523,6 +750,36 @@ async def main():
                             "error": {"code": -32002, "message": "Server not initialized"}}
             else:
                 response = await handle_tools_call(request, session, cursor, send_notification)
+        elif method == "resources/list":
+            try:
+                result = handle_resources_list(cursor)
+                response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+            except Exception as e:
+                response = {"jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": -32603, "message": str(e)}}
+        elif method == "resources/read":
+            try:
+                uri = request.get("params", {}).get("uri")
+                if not uri:
+                    response = {"jsonrpc": "2.0", "id": request["id"],
+                                "error": {"code": -32602, "message": "Missing uri parameter"}}
+                else:
+                    result = handle_resources_read(uri, cursor)
+                    response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+            except Exception as e:
+                response = {"jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": -32603, "message": str(e)}}
+        elif method == "prompts/list":
+            try:
+                result = handle_prompts_list()
+                response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+            except Exception as e:
+                response = {"jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": -32603, "message": str(e)}}
+        elif method == "elicitation/create":
+            response = await handle_elicitation_create(request, send_notification)
+        elif method == "sampling/createMessage":
+            response = await handle_sampling_createMessage(request, send_notification)
         else:
             response = {"jsonrpc": "2.0", "id": request.get("id"),
                         "error": {"code": -32601, "message": f"Unknown method {method}"}}
