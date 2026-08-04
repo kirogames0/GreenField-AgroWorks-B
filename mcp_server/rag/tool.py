@@ -15,7 +15,7 @@ prose written by the Agronomy & Compliance team.
 
 import sqlite3
 
-from knowledge_base import knowledge_store
+from mcp_server.rag.knowledge_base import knowledge_store
 
 SEARCH_KNOWLEDGE_BASE_SCHEMA = {
     "name": "search_knowledge_base",

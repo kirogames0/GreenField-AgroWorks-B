@@ -17,7 +17,7 @@ off from the reason it matters) would make a chunk useless on its own.
 """
 
 import os
-from keyword_search import KeywordStore
+from mcp_server.rag.keyword_search import KeywordStore
 
 _KB_PATH = os.path.join(os.path.dirname(__file__), "data", "chemical_safety_handbook.md")
 

@@ -20,10 +20,9 @@ import sqlite3
 import sys
 import os
 from typing import Callable
-from dataclasses import dataclass
 
 # Import all the same handlers and tools from the stdio version
-from server import (
+from mcp_server.server import (
     _initialize_database_if_needed,
     handle_initialize,
     handle_tools_list,
@@ -35,14 +34,13 @@ from server import (
     handle_sampling_createMessage,
     Session,
     DB_PATH,
-    get_db_cursor,
 )
 
 
 # Get the project root directory
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-DB_DIR = os.path.join(PROJECT_ROOT, "DB")
+DB_DIR = os.path.join(PROJECT_ROOT, "db")
 
 
 # HTTP server using asyncio (minimal implementation without external libraries)

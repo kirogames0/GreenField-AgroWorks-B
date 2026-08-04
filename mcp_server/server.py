@@ -53,7 +53,7 @@ from tools_reads import (
 # Get the project root directory (one level up from this file's parent Server/)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-DB_DIR = os.path.join(PROJECT_ROOT, "DB")
+DB_DIR = os.path.join(PROJECT_ROOT, "db")
 DB_PATH = os.path.join(PROJECT_ROOT, "greenfield.db")
 
 
