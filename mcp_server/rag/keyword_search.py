@@ -31,7 +31,7 @@ class KeywordStore:
         self._bm25: Optional[BM25Okapi] = None
         self._dirty = True
 
-    def upsert(self, payload: Any, metadata: dict) -> None:
+    def upsert(self, payload: Any, metadata: dict, doc_id: Optional[str] = None) -> None:
         self._records.append(_Record(payload=payload, metadata=metadata))
         self._dirty = True
 

@@ -18,10 +18,12 @@ off from the reason it matters) would make a chunk useless on its own.
 
 import os
 from mcp_server.rag.keyword_search import KeywordStore
+from mcp_server.rag.vector_store.store import VectorStore
 
 _KB_PATH = os.path.join(os.path.dirname(__file__), "data", "chemical_safety_handbook.md")
 
-knowledge_store = KeywordStore()
+keyword_store = KeywordStore()
+vector_store = VectorStore()
 
 
 def _chunk_markdown_by_section(text: str) -> list[dict]:
@@ -47,30 +49,31 @@ def _chunk_markdown_by_section(text: str) -> list[dict]:
 
 
 def index_knowledge_base(path: str = _KB_PATH) -> int:
-    """Loads the handbook, chunks it by section, and indexes each chunk.
-
-    Safe to call more than once (e.g. on server startup); callers wanting
-    a clean re-index should construct a fresh KeywordStore first.
-    """
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read()
 
     sections = _chunk_markdown_by_section(raw)
-    for section in sections:
-        knowledge_store.upsert(
-            payload=section["text"],
-            metadata={
-                "source": "chemical_safety_handbook.md",
-                "section": section["title"],
-                # Every field_hand and certified_applicator can read this
-                # doc today. The field exists so a future restricted
-                # section (e.g. internal incident-cost data) can be
-                # locked to a role without changing the tool's schema.
-                "role_required": "any",
-            },
-        )
+    for idx, section in enumerate(sections):
+        title_lower = section["title"].lower()
+
+        category = "general"
+        if "re-entry" in title_lower or "rei" in title_lower:
+            category = "field_safety"
+        elif "spill" in title_lower or "emergency" in title_lower:
+            category = "emergency"
+
+        meta = {
+            "source": "chemical_safety_handbook.md",
+            "section": section["title"],
+            "category": category,
+            "role_required": "any",
+        }
+
+        #needed for hybrid search
+        keyword_store.upsert(payload=section["text"], metadata=meta, doc_id=f"handbook_{idx}")
+        vector_store.upsert(payload=section["text"], metadata=meta, doc_id=f"handbook_{idx}")
+
     return len(sections)
 
 
-# Index once at import time.
 _CHUNK_COUNT = index_knowledge_base()
