@@ -166,7 +166,7 @@ class AgroWorksAgent:
         
         # 1. Promote-or-Drop: Ask the LLM if there are durable facts to remember
         extraction = self._generate_llm_response(
-            f"{PROMOTE_OR_DROP_PROMPT}\nConversation: {conversation_dump}"
+            f"{SYSTEM_PROMPT}\nConversation: {conversation_dump}"
         )
         
         if "NO_NEW_FACTS" not in extraction:
