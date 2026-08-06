@@ -12,19 +12,15 @@ query against Fields/Chemicals/Chemical_Applications could ever answer,
 because REI, PHI, buffer zones, and spill-response steps only exist as
 prose written by the Agronomy & Compliance team.
 """
-
-import sqlite3
-
-from mcp_server.rag.knowledge_base import knowledge_store
+from mcp_server.rag.hybrid_search import run_hybrid_search
+from mcp_server.rag.agentic_rag import run_agentic_rag
 
 SEARCH_KNOWLEDGE_BASE_SCHEMA = {
     "name": "search_knowledge_base",
     "description": (
         "Search the Chemical Safety & Compliance Handbook for guidance on "
         "re-entry intervals, pre-harvest intervals, buffer zones, spill "
-        "response, and restricted-use requirements. Use this before "
-        "scheduling field work near a recent application, or before "
-        "finalizing a compliance report for a buyer audit. Read-only."
+        "response, and restricted-use requirements. Read-only."
     ),
     "inputSchema": {
         "type": "object",
@@ -33,12 +29,15 @@ SEARCH_KNOWLEDGE_BASE_SCHEMA = {
                 "type": "string",
                 "description": "Keywords describing the compliance question or topic.",
             },
+            "category": {
+                "type": "string",
+                "description": "Optional filter. Use 'field_safety', 'emergency', or 'general'.",
+            },
             "top_k": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 10,
                 "default": 3,
-                "description": "Max number of handbook sections to return.",
             },
         },
         "required": ["query"],
@@ -47,52 +46,68 @@ SEARCH_KNOWLEDGE_BASE_SCHEMA = {
 }
 
 
-def search_knowledge_base(args: dict, cursor: sqlite3.Cursor, session_role: str = "any") -> dict:
-    """
-    Handler registered for the `search_knowledge_base` tool.
+DEEP_RESEARCH_SCHEMA = {
+    "name": "search_knowledge_base",
+    "description": (
+        "Use this tool ONLY for complex, multi-part questions where standard search failed "
+    "to find a complete answer. It uses a slower reasoning loop to verify document relevance."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Keywords describing the compliance question or topic.",
+            },
+            "category": {
+                "type": "string",
+                "description": "Optional filter. Use 'field_safety', 'emergency', or 'general'.",
+            },
+            "top_k": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 3,
+            },
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
 
-    Signature matches check_field_status(args, cursor) / get_inventory(args, cursor)
-    for consistency with the rest of tools_reads.py; `cursor` is accepted
-    but unused since this tool queries the in-memory keyword store, not
-    the sqlite DB. `session_role` mirrors the pattern used by
-    request_pesticide_application: it comes from the session, never from
-    `args`, so a caller can't unlock restricted handbook sections just by
-    passing a role field.
-    """
+#HOTFIX: the task wanted all approaches to be seperate so i am going to isolate the logic ouf ot the tool for now
+#ofc according to the rubric we need to actually make a case on why hybrid is the effecient option here and
+#added a new tool for the agentic rag approach. should be wired to the server according to issue #8
+def search_knowledge_base(args: dict, cursor=None, session_role: str = "any") -> dict:
     query = args.get("query")
     if not query:
         raise ValueError("query is required")
 
-    top_k = args.get("top_k", 3)
-    try:
-        top_k = int(top_k)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid top_k: {top_k}")
-    if not (1 <= top_k <= 10):
-        raise ValueError("top_k must be between 1 and 10")
+    top_k = int(args.get("top_k", 3))
+    output = run_hybrid_search(query=query, top_k=top_k)
 
-    matches = knowledge_store.query(query_text=query, top_k=top_k)
-
-    visible = [
-        m for m in matches
-        if m["metadata"]["role_required"] in ("any", session_role)
-    ]
-
-    if not visible:
-        return {
-            "query": query,
-            "results": [],
-            "message": "No relevant handbook sections found for that query.",
-        }
+    visible = [m for m in output["results"] if m["metadata"]["role_required"] in ("any", session_role)]
 
     return {
         "query": query,
-        "results": [
-            {
-                "section": m["metadata"]["section"],
-                "text": m["payload"],
-                "relevance_score": round(m["score"], 2),
-            }
-            for m in visible
-        ],
+        "architecture_used": "Hybrid Search",
+        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible]
     }
+
+
+def deep_research_knowledge_base(args: dict, cursor=None, session_role: str = "any") -> dict:
+    query = args.get("query")
+    if not query:
+        raise ValueError("query is required")
+
+    top_k = int(args.get("top_k", 3))
+    output = run_agentic_rag(query=query, top_k=top_k)
+
+    visible = [m for m in output["results"] if m["metadata"]["role_required"] in ("any", session_role)]
+
+    return {
+        "query": query,
+        "architecture_used": "Agentic RAG (Self-Verified)",
+        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible]
+    }
+
