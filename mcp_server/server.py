@@ -49,6 +49,12 @@ from tools_reads import (
     request_pesticide_application,
 )
 
+from mcp_server.rag.tool import (
+    SEARCH_KNOWLEDGE_BASE_SCHEMA,
+    search_knowledge_base,
+    DEEP_RESEARCH_SCHEMA,
+    deep_research_knowledge_base
+)
 
 # Get the project root directory (one level up from this file's parent Server/)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -160,7 +166,7 @@ class Session:
     worker_id: str | None = None
 
 
-READ_ONLY_TOOLS = ["check_field_status", "get_inventory", "generate_compliance_report", "authenticate"]
+READ_ONLY_TOOLS = ["check_field_status", "get_inventory", "generate_compliance_report", "authenticate", 'search_knowledge_base','deep_research_knowledge_base']
 APPLICATOR_ONLY_TOOLS = ["request_pesticide_application"]
 
 
@@ -331,6 +337,35 @@ async def handle_tools_call(
                     "id": request["id"],
                     "error": {"code": -32602, "message": str(e)}
                 }
+        elif tool_name == "search_knowledge_base":
+            try:
+                result = search_knowledge_base(args)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32603, "message": str(e)}
+                }
+
+        elif tool_name == "deep_research_knowledge_base":
+            try:
+                result = deep_research_knowledge_base(args)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32603, "message": str(e)}
+                }
         
         elif tool_name == "request_pesticide_application":
             # Defensive write-tool: verify session role before proceeding
@@ -363,7 +398,7 @@ async def handle_tools_call(
                 "id": request["id"],
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"}
             }
-    
+
     except Exception as e:
         return {
             "jsonrpc": "2.0",
@@ -395,6 +430,9 @@ def _load_tool_definitions() -> list[dict]:
         GET_INVENTORY_SCHEMA,
         GENERATE_COMPLIANCE_REPORT_SCHEMA,
         REQUEST_PESTICIDE_APPLICATION_SCHEMA,
+        REQUEST_PESTICIDE_APPLICATION_SCHEMA,
+        SEARCH_KNOWLEDGE_BASE_SCHEMA,
+        DEEP_RESEARCH_SCHEMA,
     ]
     return tools
 
