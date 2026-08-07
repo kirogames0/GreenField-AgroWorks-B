@@ -14,6 +14,7 @@ prose written by the Agronomy & Compliance team.
 """
 from mcp_server.rag.hybrid_search import run_hybrid_search
 from mcp_server.rag.agentic_rag import run_agentic_rag
+from mcp_server.rag.self_rag_check import validate_retrieval_and_answer
 
 SEARCH_KNOWLEDGE_BASE_SCHEMA = {
     "name": "search_knowledge_base",
@@ -87,11 +88,19 @@ def search_knowledge_base(args: dict, cursor=None, session_role: str = "any") ->
     output = run_hybrid_search(query=query, top_k=top_k)
 
     visible = [m for m in output["results"] if m["metadata"]["role_required"] in ("any", session_role)]
+    contexts = [m["payload"] for m in visible]
+    validation = validate_retrieval_and_answer(
+        query=query,
+        retrieved_contexts=contexts,
+        generated_answer="",
+        source="RAG",
+    )
 
     return {
         "query": query,
         "architecture_used": "Hybrid Search",
-        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible]
+        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible],
+        "validation": validation,
     }
 
 
@@ -104,10 +113,18 @@ def deep_research_knowledge_base(args: dict, cursor=None, session_role: str = "a
     output = run_agentic_rag(query=query, top_k=top_k)
 
     visible = [m for m in output["results"] if m["metadata"]["role_required"] in ("any", session_role)]
+    contexts = [m["payload"] for m in visible]
+    validation = validate_retrieval_and_answer(
+        query=query,
+        retrieved_contexts=contexts,
+        generated_answer="",
+        source="RAG",
+    )
 
     return {
         "query": query,
         "architecture_used": "Agentic RAG (Self-Verified)",
-        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible]
+        "results": [{"section": m["metadata"]["section"], "text": m["payload"]} for m in visible],
+        "validation": validation,
     }
 
