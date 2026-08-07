@@ -4,7 +4,9 @@ here (by whatever context_eval/ strategy is chosen later) must never
 reach into scratchpad state.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+from memory.promote_or_drop import route_overflow_items
 
 
 @dataclass
@@ -17,6 +19,8 @@ class ShortTermBuffer:
     def __init__(self, max_messages: int = 20):
         self.max_messages = max_messages
         self._messages: list[Message] = []
+        self.overflow_decisions: list[dict] = []
+        self.episodic_promotions: list[dict] = []
 
     def add(self, role: str, content: str):
         self._messages.append(Message(role, content))
@@ -29,6 +33,12 @@ class ShortTermBuffer:
         # not the final strategy choice.
         overflow = len(self._messages) - self.max_messages
         if overflow > 0:
+            overflow_items = self._messages[:overflow]
+            decisions = route_overflow_items(overflow_items)
+            self.overflow_decisions.extend(decisions)
+            self.episodic_promotions.extend(
+                decision for decision in decisions if decision["action"] == "promote_to_episodic"
+            )
             self._messages = self._messages[overflow:]
 
     @property
