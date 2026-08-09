@@ -37,6 +37,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 # Import tool definitions and handlers
 from tools_reads import (
     AUTHENTICATE_SCHEMA,
@@ -44,16 +49,20 @@ from tools_reads import (
     GET_INVENTORY_SCHEMA,
     GENERATE_COMPLIANCE_REPORT_SCHEMA,
     REQUEST_PESTICIDE_APPLICATION_SCHEMA,
+    STORE_EPISODIC_MEMORY_SCHEMA,
+    FETCH_EPISODIC_MEMORY_SCHEMA,
     check_field_status,
     get_inventory,
     request_pesticide_application,
+    store_episodic_memory,
+    fetch_episodic_memory,
 )
 
 from mcp_server.rag.tool import (
     SEARCH_KNOWLEDGE_BASE_SCHEMA,
     search_knowledge_base,
     DEEP_RESEARCH_SCHEMA,
-    deep_research_knowledge_base
+    deep_research_knowledge_base,
 )
 
 # Get the project root directory (one level up from this file's parent Server/)
@@ -62,11 +71,28 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 DB_DIR = os.path.join(PROJECT_ROOT, "db")
 DB_PATH = os.path.join(PROJECT_ROOT, "greenfield.db")
 
+EPISODIC_MEMORY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS EpisodicMemory (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 
 def _initialize_database_if_needed():
     """Initialize the database with schema and seed data if it doesn't exist."""
     if os.path.exists(DB_PATH):
-        return  # Database already exists
+        # If the DB already exists from a prior run, migrate it to include
+        # the episodic memory table required by the new agent wiring.
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(EPISODIC_MEMORY_TABLE_SQL)
+        conn.commit()
+        conn.close()
+        return  # Database already exists and is up to date
     
     print(f"Initializing database at {DB_PATH}", file=sys.stderr)
     
@@ -166,7 +192,16 @@ class Session:
     worker_id: str | None = None
 
 
-READ_ONLY_TOOLS = ["check_field_status", "get_inventory", "generate_compliance_report", "authenticate", 'search_knowledge_base','deep_research_knowledge_base']
+READ_ONLY_TOOLS = [
+    "check_field_status",
+    "get_inventory",
+    "generate_compliance_report",
+    "authenticate",
+    "search_knowledge_base",
+    "deep_research_knowledge_base",
+    "fetch_episodic_memory",
+    "store_episodic_memory",
+]
 APPLICATOR_ONLY_TOOLS = ["request_pesticide_application"]
 
 
@@ -366,6 +401,36 @@ async def handle_tools_call(
                     "id": request["id"],
                     "error": {"code": -32603, "message": str(e)}
                 }
+
+        elif tool_name == "store_episodic_memory":
+            try:
+                result = store_episodic_memory(args, cursor)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32603, "message": str(e)}
+                }
+
+        elif tool_name == "fetch_episodic_memory":
+            try:
+                result = fetch_episodic_memory(args, cursor)
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                }
+            except Exception as e:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32603, "message": str(e)}
+                }
         
         elif tool_name == "request_pesticide_application":
             # Defensive write-tool: verify session role before proceeding
@@ -430,9 +495,10 @@ def _load_tool_definitions() -> list[dict]:
         GET_INVENTORY_SCHEMA,
         GENERATE_COMPLIANCE_REPORT_SCHEMA,
         REQUEST_PESTICIDE_APPLICATION_SCHEMA,
-        REQUEST_PESTICIDE_APPLICATION_SCHEMA,
         SEARCH_KNOWLEDGE_BASE_SCHEMA,
         DEEP_RESEARCH_SCHEMA,
+        FETCH_EPISODIC_MEMORY_SCHEMA,
+        STORE_EPISODIC_MEMORY_SCHEMA,
     ]
     return tools
 

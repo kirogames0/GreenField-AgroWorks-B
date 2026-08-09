@@ -79,3 +79,12 @@ CREATE TABLE Inventory (
     unit TEXT NOT NULL,
     FOREIGN KEY (chemical_id) REFERENCES Chemicals(chemical_id)
 );
+
+CREATE TABLE EpisodicMemory (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

@@ -2,22 +2,17 @@ import json
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from dotenv import load_dotenv
-from openai import OpenAI
+
+import requests
 from mcp_server.rag.hybrid_search import run_hybrid_search
 
-
-load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = "openai/gpt-oss-20b:free"
-llm_client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    default_headers={
-        "HTTP-Referer": "https://github.com/GreenField-AgroWorks",
-        "X-Title": "GreenField AgroWorks MCP Agent",
-    }
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large")
+MISTRAL_API_URL = os.getenv(
+    "MISTRAL_API_URL",
+    "https://api.mistral.ai/v1/chat/completions",
 )
+
 SELF_RAG_CRITIQUE_PROMPT = """
 You are a strict compliance evaluator for agricultural chemical safety documents.
 Analyze whether the provided document chunk directly answers or contains necessary context for the user query.
@@ -34,41 +29,66 @@ Task: Respond strictly with a JSON object containing:
 
 
 def call_llm(query: str, payload: str) -> Tuple[bool, int, str]:
+    if not MISTRAL_API_KEY:
+        lower_query = query.lower()
+        lower_payload = payload.lower()
+        matched_terms = [term for term in lower_query.split() if term and term in lower_payload]
+        is_relevant = len(matched_terms) >= max(1, len(lower_query.split()) // 5)
+        reasoning = (
+            "Fallback lexical relevance decision because MISTRAL_API_KEY is not configured."
+            f" Matched terms: {matched_terms}"
+        )
+        return is_relevant, 0, reasoning
 
     formatted_prompt = SELF_RAG_CRITIQUE_PROMPT.format(query=query, document=payload)
+    response = requests.post(
+        MISTRAL_API_URL,
+        headers={
+            "Authorization": f"Bearer {MISTRAL_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MISTRAL_MODEL,
+            "messages": [{"role": "user", "content": formatted_prompt}],
+            "temperature": 0.0,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+
+    raw_content = ""
+    if data.get("choices"):
+        raw_content = data["choices"][0].get("message", {}).get("content", "").strip()
+
+    tokens_used = 0
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        tokens_used = usage.get("total_tokens", 0) or usage.get("prompt_tokens", 0) or 0
+
+    cleaned_content = raw_content
+    if "```json" in cleaned_content:
+        cleaned_content = cleaned_content.split("```json")[1].split("```")[0].strip()
+    elif "```" in cleaned_content:
+        cleaned_content = cleaned_content.split("```", 1)[1].split("```", 1)[0].strip()
+
     try:
-        response = llm_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": formatted_prompt}],
-            temperature=0.0,
-        )
-
-        raw_content = response.choices[0].message.content.strip()
-        tokens_used = response.usage.total_tokens if response.usage else 0
-
-        # Handle models that format JSON output inside markdown fences
-        cleaned_content = raw_content
-        if "```json" in cleaned_content:
-            cleaned_content = cleaned_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in cleaned_content:
-            cleaned_content = cleaned_content.split("```")[1].split("```")[0].strip()
-
         res_json = json.loads(cleaned_content)
-        is_relevant = bool(res_json.get("is_relevant", False))
-        reasoning = res_json.get("reasoning", "No reasoning provided.")
+    except json.JSONDecodeError:
+        return False, tokens_used, f"Unable to parse verification response: {cleaned_content}"
 
-        return is_relevant, tokens_used, reasoning
+    is_relevant = bool(res_json.get("is_relevant", False))
+    reasoning = res_json.get("reasoning", "No reasoning provided.")
 
-    except Exception as err:
-        print(f"LLM Verification error: {err}")
-        return True, 0, f"Error during verification: {str(err)}"
+    return is_relevant, tokens_used, reasoning
+
 
 def run_agentic_rag(
     query: str,
     top_k: int = 3,
     category: Optional[str] = None,
-    session_role: str = "any",  ) -> Dict[str, Any]:
-
+    session_role: str = "any",
+) -> Dict[str, Any]:
     start_time = time.perf_counter()
     total_tokens = 0
     trace: List[Dict[str, Any]] = []
@@ -94,12 +114,22 @@ def run_agentic_rag(
         doc_text = candidate.get("payload", candidate.get("text", ""))
         section_title = candidate.get("metadata", {}).get("section", f"chunk_{idx + 1}")
 
-        is_relevant, tokens, reasoning = call_llm(
-            query=query,
-            payload=doc_text,
-        )
-        total_tokens += tokens
+        try:
+            is_relevant, tokens, reasoning = call_llm(
+                query=query,
+                payload=doc_text,
+            )
+        except Exception as err:
+            trace.append({
+                "step": f"critique_candidate_{idx + 1}",
+                "section": section_title,
+                "is_relevant": False,
+                "reasoning": str(err),
+                "tokens_consumed": 0,
+            })
+            continue
 
+        total_tokens += tokens
         trace.append({
             "step": f"critique_candidate_{idx + 1}",
             "section": section_title,

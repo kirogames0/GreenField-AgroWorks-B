@@ -1,180 +1,273 @@
 """
-Greenfield AI Agent - connects to MCP server via MCPClient
-================================
-
-This agent:
-1. Starts the MCP server (Server/server.py) as a subprocess
-2. Initializes MCPClient to communicate with it
-3. Makes real MCP tool calls (not hardcoded fakes)
-4. Respects server capabilities and tool availability
+Greenfield AI Agent — session-aware agent loop with RAG and episodic memory.
+This agent starts the existing MCP server, calls real MCP tools, stores
+episodic buffer promotions, and uses Mistral for generative answers.
 """
-from prompts import SYSTEM_PROMPT
+
 import asyncio
+import json
 import os
 import sys
-import json
+from datetime import datetime
+from typing import Any
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+from prompts import SYSTEM_PROMPT
 from mcp_client import MCPClient
-from safety import is_restricted
-from tools import (
-    check_inventory,
-    check_crop_status,
-    request_human_approval,
-    authenticate_worker,
-    generate_compliance_report,
+from mistral_client import MistralClient
+from memory.scratchpad import Scratchpad
+from memory.short_term_buffer import ShortTermBuffer
+from mcp_server.rag.self_rag_check import (
+    validate_retrieval_and_answer,
+    validate_memory_recall_output,
 )
 
 
-async def process_request(user_request, client):
-    """Process a user request by calling appropriate MCP tools on the server."""
-    restricted, chemical = is_restricted(user_request)
+class AgroWorksAgent:
+    def __init__(self, client: MCPClient, buffer_limit: int = 20):
+        self.client = client
+        self.buffer_limit = buffer_limit
+        self.scratchpads: dict[str, Scratchpad] = {}
+        self.buffers: dict[str, ShortTermBuffer] = {}
+        self.llm = MistralClient()
 
-    if restricted:
-        return (
-            f"⛔ STOP\n"
-            f"{chemical} is a restricted chemical.\n"
-            f"{await request_human_approval(client)}"
+    def get_scratchpad(self, session_id: str) -> Scratchpad:
+        if session_id not in self.scratchpads:
+            self.scratchpads[session_id] = Scratchpad()
+        return self.scratchpads[session_id]
+
+    def get_buffer(self, session_id: str) -> ShortTermBuffer:
+        if session_id not in self.buffers:
+            self.buffers[session_id] = ShortTermBuffer(max_messages=self.buffer_limit)
+        return self.buffers[session_id]
+
+    async def process_message(self, session_id: str, user_input: str) -> str:
+        scratchpad = self.get_scratchpad(session_id)
+        buffer = self.get_buffer(session_id)
+
+        buffer.add("user", user_input)
+        await self._persist_overflow_promotions(session_id, buffer.take_new_overflow_decisions())
+
+        self._update_scratchpad_for_input(scratchpad, user_input)
+
+        rag_result = await self._call_rag_tool(user_input)
+        memory_result = await self._fetch_episodic_memory(session_id, user_input)
+
+        response, tokens_used = self._generate_response(
+            session_id=session_id,
+            user_input=user_input,
+            scratchpad=scratchpad,
+            buffer=buffer,
+            rag_result=rag_result,
+            memory_result=memory_result,
         )
 
-    request = user_request.lower()
+        buffer.add("assistant", response)
+        return response
 
-    if "inventory" in request:
-        return await check_inventory(client)
+    def _update_scratchpad_for_input(self, scratchpad: Scratchpad, user_input: str) -> None:
+        lower = user_input.lower()
 
-    if "crop" in request or "field" in request:
-        # Try to extract field_id if specified
-        field_id = None
-        if "field" in request:
-            # Simple extraction: look for 'f1', 'f2', etc.
-            parts = request.split()
-            for part in parts:
-                if part.startswith('f') and part[1:].isdigit():
-                    field_id = part
-                    break
-        return await check_crop_status(client, field_id)
-    
-    if "worker" in request or "authenticate" in request:
-        # Try to extract worker_id if specified
-        worker_id = None
-        parts = request.split()
-        for part in parts:
-            if part.startswith('w') and part[1:].isdigit():
-                worker_id = part
-                break
-        return await authenticate_worker(client, worker_id)
-    
-    if "compliance" in request or "report" in request:
-        # For now, return a message indicating this needs parameters
-        return "To generate a compliance report, please provide: buyer_id, start_date (YYYY-MM-DD), and end_date (YYYY-MM-DD)"
+        if "compliance report" in lower or "generate compliance report" in lower:
+            scratchpad.set_task(
+                "generate compliance report",
+                "gather buyer/date range and call generate_compliance_report tool",
+            )
+        elif "authenticate" in lower or "worker" in lower:
+            scratchpad.set_task(
+                "authenticate worker",
+                "verify worker credentials and refresh session role",
+            )
+        elif "inventory" in lower:
+            scratchpad.set_task(
+                "inventory check",
+                "retrieve current inventory levels for requested chemicals",
+            )
+        elif "field" in lower or "crop" in lower:
+            scratchpad.set_task(
+                "field status lookup",
+                "use check_field_status to answer crop or field questions",
+            )
 
-    return "I don't understand your request. Try asking about inventory, crop status, worker authentication, or compliance reports."
+    async def _persist_overflow_promotions(self, session_id: str, decisions: list[dict]) -> None:
+        for decision in decisions:
+            if decision["action"] != "promote_to_episodic":
+                continue
+
+            item = decision["item"]
+            content = item.content if hasattr(item, "content") else str(item)
+            await self.client.call_tool(
+                "store_episodic_memory",
+                {
+                    "session_id": session_id,
+                    "role": "assistant",
+                    "content": content,
+                    "source": "buffer_overflow",
+                    "created_at": datetime.utcnow().date().isoformat(),
+                },
+            )
+
+    async def _call_rag_tool(self, query: str) -> dict[str, Any]:
+        if not self.client.has_tool("search_knowledge_base"):
+            return {"results": [], "validation": None, "architecture_used": "none"}
+
+        result = await self.client.call_tool("search_knowledge_base", {"query": query, "top_k": 3})
+        if result.get("results"):
+            return result
+
+        # fallback to a deeper reasoning search if the simple retrieval returns nothing
+        if self.client.has_tool("deep_research_knowledge_base"):
+            return await self.client.call_tool(
+                "deep_research_knowledge_base",
+                {"query": query, "top_k": 3},
+            )
+        return result
+
+    async def _fetch_episodic_memory(self, session_id: str, query: str) -> dict[str, Any]:
+        if not self.client.has_tool("fetch_episodic_memory"):
+            return {"memories": []}
+
+        return await self.client.call_tool(
+            "fetch_episodic_memory",
+            {"session_id": session_id, "query": query, "limit": 5},
+        )
+
+    def _compose_prompt(
+        self,
+        user_input: str,
+        scratchpad: Scratchpad,
+        buffer: ShortTermBuffer,
+        rag_result: dict[str, Any],
+        memory_result: dict[str, Any],
+    ) -> str:
+        sections = [SYSTEM_PROMPT.strip()]
+
+        if scratchpad.current_plan:
+            sections.append(f"Current plan: {scratchpad.current_plan}")
+        if scratchpad.sub_goal:
+            sections.append(f"Sub-goal: {scratchpad.sub_goal}")
+        if scratchpad.working_state:
+            sections.append(f"Working state: {json.dumps(scratchpad.working_state)}")
+
+        if rag_result.get("results"):
+            rag_texts = [str(item.get("text", item.get("payload", ""))) for item in rag_result["results"]]
+            sections.append("Relevant knowledge base snippets:")
+            sections.extend(rag_texts)
+
+        if memory_result.get("memories"):
+            sections.append("Relevant episodic memory:")
+            sections.extend([m["content"] for m in memory_result["memories"]])
+
+        transcript = buffer.as_transcript()
+        if transcript:
+            sections.append("Recent conversation transcript:")
+            sections.append(transcript)
+
+        sections.append(f"User: {user_input}")
+        return "\n\n".join(sections)
+
+    def _generate_response(
+        self,
+        session_id: str,
+        user_input: str,
+        scratchpad: Scratchpad,
+        buffer: ShortTermBuffer,
+        rag_result: dict[str, Any],
+        memory_result: dict[str, Any],
+    ) -> tuple[str, int]:
+        prompt = self._compose_prompt(
+            user_input=user_input,
+            scratchpad=scratchpad,
+            buffer=buffer,
+            rag_result=rag_result,
+            memory_result=memory_result,
+        )
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": prompt},
+        ]
+
+        answer, tokens_used = self.llm.chat(messages=messages, temperature=0.0, max_tokens=512)
+
+        rag_contexts = [
+            str(item.get("text", item.get("payload", "")))
+            for item in rag_result.get("results", [])
+        ]
+        memory_contexts = [item.get("content", "") for item in memory_result.get("memories", [])]
+
+        rag_validation = validate_retrieval_and_answer(
+            query=user_input,
+            retrieved_contexts=rag_contexts,
+            generated_answer=answer,
+            source="RAG",
+        ) if rag_contexts else {"passed": True, "trace": []}
+
+        memory_validation = validate_memory_recall_output(
+            query=user_input,
+            recalled_memories=memory_contexts,
+            generated_answer=answer,
+            source="memory-recall",
+        ) if memory_contexts else {"passed": True, "trace": []}
+
+        if not rag_validation["passed"] or not memory_validation["passed"]:
+            trace = rag_validation["trace"] + memory_validation["trace"]
+            return (
+                "I cannot answer confidently because retrieved supporting content failed validation. "
+                "Please ask again or provide a simpler question.\n"
+                "Validation trace:\n" + "\n".join(trace),
+                tokens_used,
+            )
+
+        return answer, tokens_used
 
 
 async def main():
-    """Main agent loop."""
     print("=" * 60)
     print("🌱 Greenfield AI Assistant")
     print("=" * 60)
-    print("\nStarting MCP server...")
-    
-    # Get the Server directory path
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    server_path = os.path.join(project_root, "mcp_server", "server.py")
-    
-    # Initialize MCPClient with server command using full Python executable path
+    print("Starting MCP server and connecting agent...\n")
+
+    server_path = os.path.join(PROJECT_ROOT, "mcp_server", "server.py")
     python_executable = sys.executable
     client = MCPClient([python_executable, server_path])
-    
+
     try:
-        # Start the server and complete handshake
         await client.start()
-        print(f"✓ MCP server started and initialized")
+        print("✓ MCP server started")
         print(f"✓ Server capabilities: {client.server_capabilities}")
-        print(f"✓ Available tools: {[t['name'] for t in client.tools]}\n")
-    except Exception as e:
-        print(f"✗ Failed to start MCP server: {e}", file=sys.stderr)
-        sys.exit(1)
-    
+        print(f"✓ Available tools: {[tool['name'] for tool in client.tools]}\n")
+    except Exception as exc:
+        print(f"Failed to start MCP server: {exc}", file=sys.stderr)
+        raise
+
+    agent = AgroWorksAgent(client=client, buffer_limit=20)
+    session_id = input("Session ID (use the same ID across runs to preserve memory): ").strip() or "default"
+
     try:
         while True:
-            user_request = input("\nEnter your request (or 'quit' to exit): ").strip()
-            
-            if user_request.lower() in ("quit", "exit", "q"):
+            user_input = input("\nEnter request (or 'quit'): ").strip()
+            if user_input.lower() in {"quit", "exit", "q"}:
                 break
-            
-            if not user_request:
+            if not user_input:
                 continue
-            
-            print("\nAssistant:", end=" ")
-            response = await process_request(user_request, client)
+
+            response = await agent.process_message(session_id, user_input)
+            print("\nAssistant:")
             print(response)
-    
+
     except KeyboardInterrupt:
-        print("\n\nGoodbye!")
-    
+        print("\nSession ended.")
+
     finally:
-        # Clean up: stop the server
-        print("\nStopping MCP server...", file=sys.stderr)
+        print("\nStopping MCP server...")
         await client.stop()
 
-class AgroWorksAgent:
-    def __init__(self):
-        # 1. Connect to the existing MCP Server (reusing mcp_server/)
-        self.mcp = MCPClient(server_url="http://localhost:8000") 
-        
-        # 2. Initialize Short-Term Buffer
-        self.short_term_buffer = []
-        self.buffer_limit = 5
 
-    def process_message(self, user_input: str) -> str:
-        """Main live loop for the agent."""
-        
-        # A. RAG Pipeline: Check knowledge base before answering
-        # The agent queries the MCP server's RAG tool for context
-        rag_context = self.mcp.call_tool("keyword_search", {"query": user_input})
-        
-        # B. Retrieve Long-Term Memory
-        # Fetch relevant past session data from the DB via MCP
-        user_memory = self.mcp.call_tool("fetch_long_term_memory", {"query": user_input})
-
-        # C. Construct the Augmented Prompt
-        context_injected_prompt = f"""
-        {SYSTEM_PROMPT}
-        
-        Relevant Knowledge Base Info: {rag_context}
-        Relevant Past User Memory: {user_memory}
-        
-        User: {user_input}
-        """
-
-        # D. Generate Response (using your LLM integration)
-        response = self._generate_llm_response(context_injected_prompt, self.short_term_buffer)
-
-        # E. Update Short-Term Buffer
-        self.short_term_buffer.append({"role": "user", "content": user_input})
-        self.short_term_buffer.append({"role": "assistant", "content": response})
-
-        # F. Memory Lifecycle Trigger: Promote-or-Drop & Consolidation
-        if len(self.short_term_buffer) >= self.buffer_limit:
-            self._trigger_memory_consolidation()
-
-        return response
-
-    def _trigger_memory_consolidation(self):
-        """Evaluates the short-term buffer and persists valuable facts to the DB."""
-        conversation_dump = json.dumps(self.short_term_buffer)
-        
-        # 1. Promote-or-Drop: Ask the LLM if there are durable facts to remember
-        extraction = self._generate_llm_response(
-            f"{SYSTEM_PROMPT}\nConversation: {conversation_dump}"
-        )
-        
-        if "NO_NEW_FACTS" not in extraction:
-            # 2. Consolidation: Write to DB via the existing MCP server tool
-            self.mcp.call_tool("store_long_term_memory", {"fact": extraction})
-            
-        # 3. Clear/Slide the short-term buffer
-        self.short_term_buffer = self.short_term_buffer[-2:] # Keep last turn for context
 if __name__ == "__main__":
     asyncio.run(main())
+
     

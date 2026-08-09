@@ -9,6 +9,7 @@ dicts or **kwargs tools.
 """
 
 import sqlite3
+from datetime import date
 
 
 AUTHENTICATE_SCHEMA = {
@@ -128,6 +129,91 @@ REQUEST_PESTICIDE_APPLICATION_SCHEMA = {
         "additionalProperties": False,
     },
 }
+
+STORE_EPISODIC_MEMORY_SCHEMA = {
+    "name": "store_episodic_memory",
+    "description": (
+        "Persist a short-lived episodic memory from the buffer overflow router."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "role": {"type": "string"},
+            "content": {"type": "string"},
+            "source": {"type": "string"},
+            "created_at": {"type": "string", "format": "date"},
+        },
+        "required": ["session_id", "role", "content", "source"],
+        "additionalProperties": False,
+    },
+}
+
+FETCH_EPISODIC_MEMORY_SCHEMA = {
+    "name": "fetch_episodic_memory",
+    "description": (
+        "Fetch recent episodic memory items for a session, optionally filtered by query terms."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "session_id": {"type": "string"},
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+        },
+        "required": ["session_id"],
+        "additionalProperties": False,
+    },
+}
+
+
+def store_episodic_memory(args: dict, cursor: sqlite3.Cursor) -> dict:
+    session_id = args["session_id"]
+    role = args.get("role", "any")
+    content = args["content"]
+    source = args["source"]
+    created_at = args.get("created_at", date.today().isoformat())
+
+    cursor.execute(
+        "INSERT INTO EpisodicMemory (session_id, role, content, source, created_at) VALUES (?, ?, ?, ?, ?)",
+        (session_id, role, content, source, created_at),
+    )
+    cursor.connection.commit()
+
+    return {
+        "stored": True,
+        "session_id": session_id,
+        "source": source,
+        "created_at": created_at,
+    }
+
+
+def fetch_episodic_memory(args: dict, cursor: sqlite3.Cursor) -> dict:
+    session_id = args["session_id"]
+    query = args.get("query", "").lower()
+    limit = int(args.get("limit", 5))
+
+    if query:
+        query_pattern = f"%{query}%"
+        cursor.execute(
+            "SELECT content, source, created_at FROM EpisodicMemory WHERE session_id = ? AND lower(content) LIKE ? ORDER BY id DESC LIMIT ?",
+            (session_id, query_pattern, limit),
+        )
+    else:
+        cursor.execute(
+            "SELECT content, source, created_at FROM EpisodicMemory WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit),
+        )
+
+    rows = cursor.fetchall()
+    memories = [
+        {"content": row[0], "source": row[1], "created_at": row[2]} for row in rows
+    ]
+
+    return {
+        "session_id": session_id,
+        "memories": memories,
+    }
 
 
 def check_field_status(args: dict, cursor: sqlite3.Cursor) -> dict:
