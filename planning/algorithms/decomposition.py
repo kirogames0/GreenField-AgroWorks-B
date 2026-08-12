@@ -6,7 +6,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict
 
 from ..models import Plan
-
+from .environment import Environment
 
 PLANNER_SYSTEM = """You are a careful task-decomposition planner.
 Produce a small executable DAG, not a prose checklist. Every task must make a concrete
@@ -33,8 +33,7 @@ class GeneratedPlan(BaseModel):
 
 def decompose_goal(goal: str, llm: BaseChatModel) -> Plan:
     generated = llm.with_structured_output(
-        GeneratedPlan,
-        method="json_schema",
+        GeneratedPlan
     ).invoke([
         ("system", PLANNER_SYSTEM),
         ("human", f"""Decompose this goal into 3-6 tasks: {goal!r}
@@ -49,6 +48,10 @@ Preserve the supplied goal exactly in the plan's goal field."""),
 
 def execute_plan(plan: Plan, llm: BaseChatModel, max_workers: int = 4) -> dict[str, str]:
     outputs: dict[str, str] = {}
+    env = Environment()
+    total_tokens = 0
+    total_calls = 0
+
     for batch in plan.execution_batches():
         prompts: dict[str, str] = {}
         for task_id in batch:
@@ -61,8 +64,8 @@ def execute_plan(plan: Plan, llm: BaseChatModel, max_workers: int = 4) -> dict[s
                 Current task: {task.instruction}
                 Prerequisite outputs:
                 {context}
-                Complete only the current task. Be concrete and concise. Do not invent sources."""
-        # unnecessary but nice to have
+                Complete only the current task. Be concrete and concise. Output JSON if executing an action."""
+
         with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
             futures = {
                 pool.submit(
@@ -76,10 +79,27 @@ def execute_plan(plan: Plan, llm: BaseChatModel, max_workers: int = 4) -> dict[s
                 for task_id, prompt in prompts.items()
             }
             for future in as_completed(futures):
-                content = future.result().content
+                task_id = futures[future]
+                response = future.result()  # This is an AIMessage
+                content = response.content
+
+                # Metric tracking
+                total_calls += 1
+                if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                    total_tokens += response.usage_metadata.get('total_tokens', 0)
+
                 if not isinstance(content, str) or not content.strip():
                     raise RuntimeError("The chat model returned an empty or unsupported response")
-                outputs[futures[future]] = content.strip()
+
+                # Ground the execution against the environment
+                feedback = env.evaluate(state=content.strip())
+
+                # The output passed to the next node MUST include the real environment feedback
+                final_node_output = f"LLM Action: {content.strip()}\nEnvironment Validation: {feedback.details[0]}"
+                outputs[task_id] = final_node_output
+
+    # Attach metrics to the outputs dict so your test script can read them
+    outputs["_metrics"] = {"tokens": total_tokens, "calls": total_calls}
     return outputs
 
 
