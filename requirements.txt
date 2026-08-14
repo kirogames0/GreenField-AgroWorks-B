@@ -3,3 +3,9 @@ rank_bm25
 python-dotenv
 requests
 pytest
+
+# Added for the planning agent (Decomposition & Planning Lab, planning/ folder)
+langchain-core
+langchain-mistralai
+pydantic
+networkx
