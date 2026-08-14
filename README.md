@@ -19,6 +19,7 @@
 - [Fixes Applied to Reach This State](#fixes-applied-to-reach-this-state)
 - [Rubric / Grading Checklist](#grading-checklist)
 - [Updated RAG Knowledge Base](#retrieval-augmented-generation-rag-system--evaluation)
+- [Planning Agent — Decomposition & Method Routing](#planning-agent--decomposition--method-routing)
 
 
 ---
@@ -193,12 +194,19 @@ repo/
 │       └── data/
 │           └── chemical_safety_handbook.md (to be added)
 └── agent/
-    ├── agent.py                  starts the server, drives MCPClient
-    ├── mcp_client.py             MCP client used by the agent
+    ├── agent.py                  starts the server, drives MCPClient (memory/RAG agent)
+    ├── planning_agent.py         SEPARATE agent for decomposition & planning -- does not touch agent.py
+    ├── mcp_client.py             MCP client used by both agents
     ├── tools.py                  real MCP tool call wrappers
     ├── prompts.py                system prompt
     ├── safety.py                 restricted-chemical keyword check
     └── config.py                 environment/config loading
+
+planning/                          forked from github.com/AmrSheta22/task_decomposition_and_planning
+├── planning_lab/                  the fork itself, unmodified (algorithms/, models.py, cli.py)
+├── decomposition_first.py         Issue 1: DAG nodes -> real MCP tool calls
+├── routing.py                     Issue 3: routes DAG sub-tasks to PS / ToT / LATS by shape
+└── smoke_test_routing.py          manual sanity check, not part of the graded eval suite
 
 ```
 
@@ -1138,3 +1146,156 @@ Based on these findings, we wired the retrieval pipelines into the core MCP serv
 * **Shipped Default (`search_knowledge_base`):** Pointed to the **Hybrid Search** engine. This is the agent's primary, low-latency tool for standard policy lookups.
 * **Escalation Path (`deep_research_knowledge_base`):** Pointed to the **Agentic RAG** engine. We retained this tool in the registry but exposed it strictly as an escalation path. The agent is instructed to use this high-cost, high-latency tool only for complex, multi-hop research where standard hybrid search fails to yield answers. 
 * **Role Permissions:** Both tools were added to the `READ_ONLY_TOOLS` registry, ensuring they are securely accessible to all authenticated sessions (both Field Hands and Certified Applicators).
+
+---
+
+## Planning Agent — Decomposition & Method Routing
+
+This is a **separate agent** from `agent/agent.py`'s memory/RAG agent
+(`AgroWorksAgent`) — per the lab requirement, it reuses the same
+`mcp_server/` and `db/`, but does not import from or modify
+`agent.py`, `prompts.py`, or `safety.py`. It lives at
+`agent/planning_agent.py` and stands up its own `MCPClient` connection.
+
+### The real problem this solves
+
+`agent.py` handles single-turn requests well — including correctly
+refusing to approve a restricted-chemical application outright (see the
+demo transcript below). But "prepare field f1 for a pesticide
+application" is not actually a single-call request: it genuinely needs
+several dependent steps — check field status, check inventory, check
+the compliance handbook for REI/PHI rules, *then* submit the request —
+and skipping any one of them (e.g. submitting without checking
+inventory or the handbook first) is exactly the kind of wrong-plan cost
+the lab guardrails call out. `agent.py`'s single-turn safety check is
+still correct and still fires; the planning agent is for the case where
+the request needs to be broken down and executed step by step, with
+each step calling a real tool, before a human ever needs to approve
+anything.
+
+### Fork attribution
+
+`planning/planning_lab/` is forked, unmodified, from
+[`github.com/AmrSheta22/task_decomposition_and_planning`](https://github.com/AmrSheta22/task_decomposition_and_planning).
+DAG generation, acyclicity enforcement (via `networkx`, in
+`planning_lab/models.py`'s `Plan.validate_dag`), and the
+Plan-and-Solve / Tree-of-Thoughts / LATS implementations are the
+toolkit's own code, reused as required rather than rebuilt. Our
+additions live in `planning/*.py`, outside the fork, and only ever
+*call* the toolkit's functions.
+
+### Issue 1 — Decomposition-first DAG wired to real MCP tools
+
+**File:** `planning/decomposition_first.py`
+
+The toolkit's own `execute_plan()` asks the LLM to freely narrate an
+answer for every DAG node — fine for a generic demo, wrong for us,
+where a node like "check inventory for chem2" must return the real
+on-hand quantity from the database, not a plausible-sounding guess.
+`execute_plan_against_mcp()` replaces that node-execution step: it
+inspects each task's instruction, and if it matches a real MCP tool
+(via `TASK_TOOL_ROUTER`), it calls that tool for real over the live
+`MCPClient` connection. Only genuine reasoning/synthesis nodes (e.g. a
+terminal "summarize the outcome" node with no real tool behind it)
+still go through the LLM.
+
+Acyclicity is enforced at DAG *construction* time (not caught later at
+runtime) — this is the toolkit's own `Plan.validate_dag`, confirmed
+working:
+
+```python
+>>> Plan(goal="test", tasks=[
+...     Task(id="a", instruction="do a thing", depends_on=["b"]),
+...     Task(id="b", instruction="do another", depends_on=["a"]),
+... ])
+ValueError: Cycle detected; blocked tasks: ['a', 'b']
+```
+
+Two ways to run it (`agent/planning_agent.py`):
+- **Fixed reference plan** (`build_prepare_field_plan`) — a
+  deterministic 5-node DAG for the pesticide-prep request, used for
+  reproducible demo runs and for Issue 2's dynamic-decomposition
+  divergence comparison.
+- **LLM-generated plan** (toolkit's own `decompose_goal()`, unmodified)
+  — lets the model invent its own DAG shape from a free-text goal.
+
+**Real run, LLM-generated plan, goal = "prepare field f1 for a
+pesticide application":**
+
+The model produced its own 5-task DAG (assess conditions → determine
+timing → prepare equipment / mark boundaries → submit application).
+Nodes `t1`, `t3`, `t4` had no real-tool match (genuinely nothing in our
+MCP tools does "assess soil moisture" or "mark field boundaries") and
+correctly fell through to LLM narration. `t2` and `t5` are the
+interesting ones:
+
+- `t5` called the real `request_pesticide_application` tool and got a
+  **real, grounded rejection** from the server's own authorization
+  check, not a hallucinated result:
+  ```
+  [real MCP call FAILED: request_pesticide_application(...)] ->
+  tools/call failed: {'code': -32602, 'message': 'Only certified
+  applicators can request pesticide applications. Current role: field_hand'}
+  ```
+  This is the defensive write-tool's handler-level authorization check
+  (see [MCP Server — Protocol Concerns](#mcp-server--protocol-concerns))
+  firing exactly as designed — the DAG executor recorded the real
+  failure instead of inventing a fake success. Full transcript saved
+  for the demo.
+
+### Issue 3 — Routing sub-tasks to Plan-and-Solve / Tree of Thoughts / LATS
+
+**File:** `planning/routing.py`
+
+Not every DAG node needs the same reasoning effort. Routing is by
+genuine task shape, not a default applied everywhere:
+
+| Sub-task | Shape | Routed to | Why |
+|---|---|---|---|
+| Check field status / inventory / equipment prep / mark boundaries | Single deterministic checklist, no real branching | **Plan-and-Solve** | One reasonable way to do it — plan once, execute once, cheapest option. |
+| Determine optimal application timing | Several plausible orderings that can conflict (soil-moisture readiness vs. weather window vs. pest threshold) | **Tree of Thoughts** | Genuinely benefits from generating a few candidate strategies and scoring them before committing. |
+| Submit the pesticide application | Real write action; wrong choice is expensive; a real external signal exists to check against (the MCP server's own authorization/validation response) | **LATS** | The "external feedback, not the model's own opinion" case LATS is for — see [grounded environment](#) once Issue 4 lands. |
+
+Routing for the fixed reference plan is an explicit per-task-id table
+(`ROUTING_TABLE`) — a one-time design decision, not something that
+should silently shift if wording changes. For LLM-generated plans
+(where task ids won't match the fixed table), `classify_subtask_shape()`
+provides a conservative keyword-based fallback — verified against the
+real LLM-generated plan above, it correctly classified "Determine
+optimal timing" → Tree of Thoughts and "Apply pesticide..." → LATS,
+matching what a human would pick.
+
+**Verified working end-to-end** (`planning/smoke_test_routing.py`, run
+against live Mistral): all three methods fire correctly through the
+routing layer —
+
+```
+--- t1 (plan_and_solve) --- llm_calls: 1
+--- t2 (tree_of_thoughts) --- llm_calls (approx): 4
+--- t5 (lats, toolkit's default randomized environment for this smoke test) ---
+lats | success: True | best_score: 0.8
+```
+
+**Known gap, tracked under Issue 4:** the LATS run above used the
+toolkit's default *randomized* environment, not a real grounded check
+— that's correct and expected for a smoke test, but the graded
+submission needs the real MCP-authorization-based environment plugged
+in via `run_routed_subtask()`'s `environment=` parameter before this
+counts as genuine grounding.
+
+### Run instructions
+
+```powershell
+# from repo root, with MISTRAL_API_KEY set in agent/.env or agent/config.py's expected location
+python agent\planning_agent.py
+# choose [f]ixed reference plan or [g]enerate from a goal
+```
+
+```powershell
+# quick sanity check that PS/ToT/LATS actually fire through routing.py
+python planning\smoke_test_routing.py
+```
+
+Both require `pip install -r requirements.txt` (adds `langchain-core`,
+`langchain-mistralai`, `pydantic`, `networkx` for the planning agent on
+top of the existing MCP/RAG dependencies).

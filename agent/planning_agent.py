@@ -20,11 +20,14 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "planning"))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "mcp_server"))  # config.py lives here
+# config.py lives in agent/ (confirmed via Get-ChildItem) -- SCRIPT_DIR
+# IS agent/, since this file is agent/planning_agent.py, so it's
+# already on sys.path via the insert below. Kept explicit for clarity.
+sys.path.insert(0, SCRIPT_DIR)
 
 from mcp_client import MCPClient
 from decomposition_first import build_prepare_field_plan, execute_plan_against_mcp
-from planning.algorithms.decomposition import decompose_goal, final_output
+from planning_lab.algorithms.decomposition import decompose_goal, final_output
 
 try:
     from langchain_mistralai import ChatMistralAI
