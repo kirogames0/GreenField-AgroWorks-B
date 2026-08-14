@@ -73,4 +73,6 @@ State what I did wrong and the specific strategy I should use next trial. Start 
         trial.reflection = reflection
         trials.append(trial)
         memory.append(reflection)
+        if len(memory) > memory_size:
+            memory = memory[-memory_size:]
     return ReflexionResult(False, best_attempt, trials, memory[-memory_size:])

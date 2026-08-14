@@ -3,8 +3,10 @@ from dataclasses import dataclass
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from .environment import Environment
 
-def deterministic_checks(goal: str, draft: str) -> list[str]:
+
+def deterministic_checks(goal: str, draft: str, environment: Environment | None = None) -> list[str]:
     issues: list[str] = []
     if len(draft.split()) < 80:
         issues.append("The deliverable is under 80 words and is probably incomplete.")
@@ -18,6 +20,12 @@ def deterministic_checks(goal: str, draft: str) -> list[str]:
         issues.append("The output contains none of the goal's significant terms.")
     if not re.search(r"(^|\n)(#{1,3}\s+|\d+[.)]\s+|[-*]\s+)", draft):
         issues.append("The deliverable has no visible structure (headings or list items).")
+
+    if environment is not None:
+        feedback = environment.evaluate(draft)
+        if not feedback.success:
+            for detail in feedback.details:
+                issues.append(f"Grounded validation: {detail}")
     return issues
 
 
@@ -29,10 +37,9 @@ class ReflectionResult:
     grounded_issues: list[str]
 
 
-def reflect_and_refine(goal: str, draft: str, llm: BaseChatModel) -> ReflectionResult:
-    grounded = deterministic_checks(goal, draft)
+def reflect_and_refine(goal: str, draft: str, llm: BaseChatModel, environment: Environment | None = None) -> ReflectionResult:
+    grounded = deterministic_checks(goal, draft, environment=environment)
     grounded_report = "\n".join(f"- {issue}" for issue in grounded) or "- Deterministic checks passed."
-    # This can be done better, how should it be done?
     critique_response = llm.invoke([
         ("system", "You are a separate critic. Judge against the rubric; do not rewrite the draft."),
         ("human", f"""Goal: {goal}
@@ -49,6 +56,10 @@ List concrete issues. If there are none, respond exactly PASS."""),
     if not isinstance(critique, str) or not critique.strip():
         raise RuntimeError("The chat model returned an empty or unsupported response")
     critique = critique.strip()
+
+    if grounded and critique.strip().upper() == "PASS":
+        critique = "Grounded checks failed: " + "; ".join(grounded)
+
     if critique.strip().upper() == "PASS" and not grounded:
         revised = draft
     else:
