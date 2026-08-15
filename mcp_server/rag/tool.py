@@ -14,7 +14,7 @@ prose written by the Agronomy & Compliance team.
 """
 from mcp_server.rag.decompose_search import combine_search
 from mcp_server.rag.hybrid_search import run_hybrid_search
-from mcp_server.rag.agentic_rag import llm_client, MODEL_NAME, run_agentic_rag
+from mcp_server.rag.agentic_rag import MISTRAL_MODEL, run_agentic_rag
 from mcp_server.rag.self_rag_check import validate_retrieval_and_answer
 
 SEARCH_KNOWLEDGE_BASE_SCHEMA = {
@@ -143,8 +143,8 @@ def decompose_and_search(args: dict, cursor=None, session_role: str = "any") -> 
 
     class LLMProxy:
         def complete(self, prompt: str) -> str:
-            response = llm_client.chat.completions.create(
-                model=MODEL_NAME,
+            response = MISTRAL_MODEL.chat.completions.create(
+                model="mistral-large",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
             )
