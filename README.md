@@ -1286,14 +1286,24 @@ counts as genuine grounding.
 ### Run instructions
 
 ```powershell
-# from repo root, with MISTRAL_API_KEY set in agent/.env or agent/config.py's expected location
-python agent\planning_agent.py
-# choose [f]ixed reference plan or [g]enerate from a goal
+# from repo root
+pip install -r requirements.txt
+
+# set MISTRAL_API_KEY in the environment or in a local .env file
+# then start the standalone planner
+python planning\planning_agent.py
 ```
+
+This planner is intentionally separate from the memory/RAG agent in `agent/agent.py`: it reuses the same `mcp_server/` and `greenfield.db` files, but does not touch the memory/RAG execution path.
 
 ```powershell
 # quick sanity check that PS/ToT/LATS actually fire through routing.py
 python planning\smoke_test_routing.py
+```
+
+```powershell
+# optional end-to-end comparison suite
+python planning_eval\run_comparison.py
 ```
 
 Both require `pip install -r requirements.txt` (adds `langchain-core`,
