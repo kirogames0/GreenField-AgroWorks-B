@@ -102,7 +102,15 @@ class MCPClient:
             line = await self.proc.stdout.readline()
             if not line:
                 break
-            msg = json.loads(line)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError as e:
+                # Optional: Uncomment for debugging
+                # print(f"Failed to parse JSON: {e}\nLine: {line}")
+                continue
 
             if "id" in msg and msg["id"] in self._pending:
                 # response to one of our requests

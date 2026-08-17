@@ -5,8 +5,8 @@ Demonstrates execution divergence when encountering mid-plan failures.
 
 import time
 from langchain_openai import ChatOpenAI
-from planning.algorithms.decomposition import decompose_goal, execute_plan, final_output
-from planning.algorithms.dynamic_decomposition import dynamic_decomposition
+from planning.planning_lab.algorithms.decomposition import decompose_goal, execute_plan, final_output
+from planning.planning_lab.algorithms.dynamic_decomposition import dynamic_decomposition
 import os
 
 def parse_dynamic_metrics(metrics_str: str) -> tuple[int, int]:
@@ -30,9 +30,9 @@ def run_divergence_evaluation():
     print(f"Goal: {prompt}\n")
 
     llm = ChatOpenAI(
-        base_url='http://localhost:20128/v1',
-        api_key='sk-f2b4486670eefe5e-995cbd-311ce36d',
-        model='mistral/mistral-medium-3-5',
+        base_url=os.environ["LLM_BASE_URL"],
+        api_key=os.environ["LLM_API_KEY"],
+        model=os.environ["LLM_MODEL_NAME"],
         max_retries=5
     )
 
