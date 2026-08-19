@@ -10,16 +10,13 @@ import sys
 import os
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
-# config.py actually lives in agent/, not mcp_server/ -- confirmed via
-# Get-ChildItem, not assumed. Earlier guess (mcp_server/) was wrong.
-sys.path.insert(0, os.path.abspath(os.path.join(SCRIPT_DIR, "..", "agent")))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
 
-from langchain_mistralai import ChatMistralAI
-from config import MISTRAL_API_KEY, MISTRAL_MODEL
+from config import get_llm_client
 from routing import run_routed_subtask
 
-llm = ChatMistralAI(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL, random_seed=42, max_retries=2)
+llm = get_llm_client()
 
 print("--- t1 (plan_and_solve) ---")
 r1 = run_routed_subtask("t1", "Check field status for f1", llm)

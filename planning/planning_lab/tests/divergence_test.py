@@ -4,10 +4,9 @@ Demonstrates execution divergence when encountering mid-plan failures.
 """
 
 import time
-from langchain_openai import ChatOpenAI
+from config import get_llm_client
 from planning.planning_lab.algorithms.decomposition import decompose_goal, execute_plan, final_output
 from planning.planning_lab.algorithms.dynamic_decomposition import dynamic_decomposition
-import os
 
 def parse_dynamic_metrics(metrics_str: str) -> tuple[int, int]:
     """Parses the token and call count string returned by dynamic_decomposition."""
@@ -29,12 +28,7 @@ def run_divergence_evaluation():
         CRITICAL: Whenever you output JSON to execute an action, you MUST use the exact keys 'worker_id' and 'chemical_id'."""
     print(f"Goal: {prompt}\n")
 
-    llm = ChatOpenAI(
-        base_url=os.environ["LLM_BASE_URL"],
-        api_key=os.environ["LLM_API_KEY"],
-        model=os.environ["LLM_MODEL_NAME"],
-        max_retries=5
-    )
+    llm = get_llm_client()
 
     # --- 1. Decomposition-First (Static DAG) ---
     print("--- 1. Decomposition-First (Static DAG) ---")

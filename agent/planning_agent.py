@@ -29,33 +29,7 @@ from mcp_client import MCPClient
 from decomposition_first import build_prepare_field_plan, execute_plan_against_mcp
 from planning_lab.algorithms.decomposition import decompose_goal, final_output
 
-try:
-    from langchain_mistralai import ChatMistralAI
-    from config import MISTRAL_API_KEY, MISTRAL_MODEL
-    _HAVE_MISTRAL = bool(MISTRAL_API_KEY)
-    _MISTRAL_IMPORT_ERROR = None
-except Exception as _e:
-    # Previously this silently set _HAVE_MISTRAL = False on ANY import
-    # failure, including a wrong sys.path -- which is exactly what
-    # happened here: config.py lives in mcp_server/, which wasn't on
-    # sys.path, so a real, present API key got reported as "not set."
-    # Keep the actual error so this doesn't happen silently again.
-    _HAVE_MISTRAL = False
-    _MISTRAL_IMPORT_ERROR = _e
-
-
-def _make_llm():
-    if not _HAVE_MISTRAL:
-        detail = f" (import error: {_MISTRAL_IMPORT_ERROR})" if _MISTRAL_IMPORT_ERROR else ""
-        raise RuntimeError(
-            "MISTRAL_API_KEY not available -- required for reasoning/synthesis "
-            "DAG nodes (e.g. the terminal summary step). Tool-routed nodes "
-            "(check_field_status, get_inventory, etc.) don't need the LLM "
-            f"at all and will still run real MCP calls without it.{detail}"
-            "(check_field_status, get_inventory, etc.) don't need the LLM "
-            "at all and will still run real MCP calls without it."
-        )
-    return ChatMistralAI(api_key=MISTRAL_API_KEY, model=MISTRAL_MODEL, random_seed=42, max_retries=2)
+from config import get_llm_client
 
 
 async def run_fixed_demo_plan(client: MCPClient, field_id: str = "f1") -> None:
@@ -68,7 +42,7 @@ async def run_fixed_demo_plan(client: MCPClient, field_id: str = "f1") -> None:
     print(f"\nGoal: {plan.goal}")
     print(f"Execution batches: {plan.execution_batches()}\n")
 
-    llm = _make_llm()
+    llm = get_llm_client()
     outputs = await execute_plan_against_mcp(plan, client, llm)
 
     for task_id, output in outputs.items():
@@ -87,7 +61,7 @@ async def run_llm_generated_plan(client: MCPClient, goal: str) -> None:
     real-MCP execution path. Useful once the team wants to demo
     "planner improvises the DAG" rather than the fixed reference plan.
     """
-    llm = _make_llm()
+    llm = get_llm_client()
     plan = decompose_goal(goal, llm)
     print(f"\nGenerated plan for: {goal!r}")
     for t in plan.tasks:

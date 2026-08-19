@@ -1,17 +1,10 @@
 import json
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from mcp_server.rag.hybrid_search import run_hybrid_search
-
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large")
-MISTRAL_API_URL = os.getenv(
-    "MISTRAL_API_URL",
-    "https://api.mistral.ai/v1/chat/completions",
-)
+from config import get_llm_client
 
 SELF_RAG_CRITIQUE_PROMPT = """
 You are a strict compliance evaluator for agricultural chemical safety documents.
@@ -29,80 +22,48 @@ Task: Respond strictly with a JSON object containing:
 
 
 def call_llm(query: str, payload: str) -> Tuple[bool, int, str]:
-    if not MISTRAL_API_KEY:
+    """Use centralized LLM config instead of direct API calls."""
+    formatted_prompt = SELF_RAG_CRITIQUE_PROMPT.format(query=query, document=payload)
+    
+    try:
+        llm = get_llm_client()
+        response = llm.invoke(formatted_prompt)
+        raw_content = response.content
+        
+        cleaned_content = raw_content
+        if "```json" in cleaned_content:
+            cleaned_content = cleaned_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in cleaned_content:
+            cleaned_content = cleaned_content.split("```", 1)[1].split("```", 1)[0].strip()
+
+        try:
+            res_json = json.loads(cleaned_content)
+            is_relevant = res_json.get("is_relevant", False)
+            reasoning = res_json.get("reasoning", "No reasoning provided.")
+            return is_relevant, 0, reasoning  # Tokens not available from centralized client
+        except json.JSONDecodeError:
+            return False, 0, f"Unable to parse verification response: {raw_content}"
+    except Exception as e:
+        # Fallback lexical relevance if LLM call fails
         lower_query = query.lower()
         lower_payload = payload.lower()
         matched_terms = [term for term in lower_query.split() if term and term in lower_payload]
         is_relevant = len(matched_terms) >= max(1, len(lower_query.split()) // 5)
         reasoning = (
-            "Fallback lexical relevance decision because MISTRAL_API_KEY is not configured."
-            f" Matched terms: {matched_terms}"
+            f"Fallback lexical relevance due to LLM error: {e}. "
+            f"Matched terms: {matched_terms}"
         )
         return is_relevant, 0, reasoning
 
-    formatted_prompt = SELF_RAG_CRITIQUE_PROMPT.format(query=query, document=payload)
-    response = requests.post(
-        MISTRAL_API_URL,
-        headers={
-            "Authorization": f"Bearer {MISTRAL_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": MISTRAL_MODEL,
-            "messages": [{"role": "user", "content": formatted_prompt}],
-            "temperature": 0.0,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    data = response.json()
 
-    raw_content = ""
-    if data.get("choices"):
-        raw_content = data["choices"][0].get("message", {}).get("content", "").strip()
-
-    tokens_used = 0
-    usage = data.get("usage")
-    if isinstance(usage, dict):
-        tokens_used = usage.get("total_tokens", 0) or usage.get("prompt_tokens", 0) or 0
-
-    cleaned_content = raw_content
-    if "```json" in cleaned_content:
-        cleaned_content = cleaned_content.split("```json")[1].split("```")[0].strip()
-    elif "```" in cleaned_content:
-        cleaned_content = cleaned_content.split("```", 1)[1].split("```", 1)[0].strip()
-
-    try:
-        res_json = json.loads(cleaned_content)
-    except json.JSONDecodeError:
-        return False, tokens_used, f"Unable to parse verification response: {cleaned_content}"
-
-    is_relevant = bool(res_json.get("is_relevant", False))
-    reasoning = res_json.get("reasoning", "No reasoning provided.")
-
-    return is_relevant, tokens_used, reasoning
-
-
-def run_agentic_rag(
-    query: str,
-    top_k: int = 3,
-    category: Optional[str] = None,
-    session_role: str = "any",
-) -> Dict[str, Any]:
+def run_agentic_rag(query: str, top_k: int = 3) -> Dict[str, Any]:
+    """Agentic RAG: retrieve, critique, and filter chunks using LLM."""
     start_time = time.perf_counter()
     total_tokens = 0
     trace: List[Dict[str, Any]] = []
-    candidate_fetch_k = top_k + 2
-    hybrid_output = run_hybrid_search(
-        query=query,
-        top_k=candidate_fetch_k,
-        category=category,
-        session_role=session_role,
-    )
 
-    candidates = hybrid_output.get("results", [])
-    total_tokens += hybrid_output.get("tokens_used", 0)
-
+    # Retrieve initial candidates
+    candidates = run_hybrid_search(query, top_k=top_k * 2)  # Wider net
     trace.append({
         "step": "candidate_retrieval",
         "candidates_retrieved": len(candidates),

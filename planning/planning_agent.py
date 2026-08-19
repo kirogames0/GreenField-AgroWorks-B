@@ -17,22 +17,10 @@ from planning.planning_lab.algorithms.environment import Environment
 from planning.planning_lab.algorithms.reflexion import reflexion
 from planning.planning_lab.algorithms.self_refine import reflect_and_refine
 from planning.routing import run_routed_subtask
-
-try:
-    from langchain_mistralai import ChatMistralAI
-except Exception:  # pragma: no cover - optional runtime dependency
-    ChatMistralAI = None
+from langchain_mistralai import ChatMistralAI
+from config import get_llm_client
 
 
-def _make_llm():
-    api_key = os.getenv("MISTRAL_API_KEY")
-    model = os.getenv("MISTRAL_MODEL", "mistral-large")
-    if not api_key or ChatMistralAI is None:
-        raise RuntimeError(
-            "MISTRAL_API_KEY must be set before running the planning demo. "
-            "Set it in the shell or in a project .env file."
-        )
-    return ChatMistralAI(api_key=api_key, model=model, random_seed=42, max_retries=2)
 
 
 def grounded_failure_detail(payload: dict[str, Any], environment: Environment | None = None) -> str:
@@ -89,7 +77,7 @@ def build_demo_summary(llm: Any | None = None, field_id: str = "f1") -> dict[str
 
     static_plan = build_prepare_field_plan(field_id)
     dynamic_plan = []
-    runnable_llm = llm or _make_llm()
+    runnable_llm = llm or get_llm_client()
 
     if hasattr(runnable_llm, "with_structured_output"):
         try:
@@ -204,7 +192,7 @@ def run_end_to_end_demo(llm: Any | None = None, field_id: str = "f1") -> dict[st
 
 
 def main() -> None:
-    llm = _make_llm()
+    llm = get_llm_client()
     run_end_to_end_demo(llm=llm)
 
 

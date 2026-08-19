@@ -11,15 +11,11 @@ from planning.planning_lab.algorithms.environment import Environment
 
 def call_llm(prompt: str) -> str:
     """
-    Calls the local LLM (same setup as divergence_test.py).
+    Calls the LLM using centralized config.
     Returns the LLM's raw response.
     """
-    llm = ChatOpenAI(
-        base_url=os.environ["LLM_BASE_URL"],
-        api_key=os.environ["LLM_API_KEY"],
-        model=os.environ["LLM_MODEL_NAME"],
-        max_retries=5
-    )
+    from config import get_llm_client
+    llm = get_llm_client()
     response = llm.invoke(prompt)
     return response.content
 

@@ -17,7 +17,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from prompts import SYSTEM_PROMPT
 from mcp_client import MCPClient
-from mistral_client import MistralClient
+from config import get_llm_client
 from memory.scratchpad import Scratchpad
 from memory.short_term_buffer import ShortTermBuffer
 from mcp_server.rag.self_rag_check import (
@@ -32,7 +32,7 @@ class AgroWorksAgent:
         self.buffer_limit = buffer_limit
         self.scratchpads: dict[str, Scratchpad] = {}
         self.buffers: dict[str, ShortTermBuffer] = {}
-        self.llm = MistralClient()
+        self.llm = get_llm_client()
 
     def get_scratchpad(self, session_id: str) -> Scratchpad:
         if session_id not in self.scratchpads:
