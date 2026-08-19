@@ -7,5 +7,6 @@ pytest
 # Added for the planning agent (Decomposition & Planning Lab, planning/ folder)
 langchain-core
 langchain-mistralai
+langchain-openai
 pydantic
 networkx
