@@ -9,7 +9,7 @@ need to change -- only this file does.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from rank_bm25 import BM25Okapi

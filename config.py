@@ -8,11 +8,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # Mistral section----mostly used
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
-MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large")
-MISTRAL_API_URL = os.getenv(
-    "MISTRAL_API_URL",
-    "https://api.mistral.ai/v1/chat/completions",
-)
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
 
 #for testing or running a local model or openai compatible provider (ex omniroute-openrouter)
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")

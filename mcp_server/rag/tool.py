@@ -12,7 +12,6 @@ query against Fields/Chemicals/Chemical_Applications could ever answer,
 because REI, PHI, buffer zones, and spill-response steps only exist as
 prose written by the Agronomy & Compliance team.
 """
-from mcp_server.rag.decompose_search import combine_search
 from mcp_server.rag.hybrid_search import run_hybrid_search
 from mcp_server.rag.agentic_rag import run_agentic_rag
 from mcp_server.rag.self_rag_check import validate_retrieval_and_answer

@@ -2,10 +2,7 @@
 Demonstrates the difference between ungrounded LLM self-critique
 and grounded database validation for Issue #13.
 """
-import os
 import json
-import time
-from langchain_openai import ChatOpenAI
 from planning.planning_lab.algorithms.environment import Environment
 
 

@@ -32,10 +32,8 @@ import asyncio
 import json
 import sqlite3
 import sys
-import time
 import os
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)

@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from mcp_server.rag.knowledge_base import vector_store, keyword_store
 
 

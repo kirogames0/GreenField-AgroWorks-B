@@ -1,8 +1,7 @@
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
-import requests
 from mcp_server.rag.hybrid_search import run_hybrid_search
 from config import get_llm_client
 

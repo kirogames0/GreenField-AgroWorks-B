@@ -21,7 +21,6 @@ WHERE THIS FILE LIVES IN THE GRADING MAP:
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import os
 
