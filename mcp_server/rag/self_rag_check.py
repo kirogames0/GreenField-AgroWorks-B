@@ -19,9 +19,12 @@ def _contains_relevant_terms(query: str, text: str) -> bool:
     return bool(query_terms & text_terms)
 
 
-def _answer_is_supported(query: str, contexts: list[str], answer: str) -> bool:
+def _answer_is_supported(query: str, contexts: list[str], answer: str | None) -> bool:
     if not contexts:
         return False
+
+    if answer is None:
+        return True  # Skip support check when no answer is provided
 
     answer_terms = {term.lower() for term in answer.replace("?", "").split() if term}
     context_text = " ".join(contexts).lower()

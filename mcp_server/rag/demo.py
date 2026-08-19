@@ -18,7 +18,7 @@ if __name__ == "__main__":
         session_role="any",
     )
     for r in result["results"]:
-        print(f"[{r['section']}] (score {r['relevance_score']})\n{r['text']}\n")
+        print(f"[{r['section']}]\n{r['text']}\n")
 
     print("\n=== Demo query: is the harvest date compliant? ===")
     print("Query: 'pre-harvest interval before we can pick the crop'\n")
@@ -28,7 +28,7 @@ if __name__ == "__main__":
         session_role="any",
     )
     for r in result["results"]:
-        print(f"[{r['section']}] (score {r['relevance_score']})\n{r['text']}\n")
+        print(f"[{r['section']}]\n{r['text']}\n")
 
     print("\n=== Control: query with no real keyword overlap in the handbook ===")
     print("Query: 'karaoke night signup sheet'\n")

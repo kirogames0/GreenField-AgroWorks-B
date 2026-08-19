@@ -49,7 +49,7 @@ SEARCH_KNOWLEDGE_BASE_SCHEMA = {
 
 
 DEEP_RESEARCH_SCHEMA = {
-    "name": "search_knowledge_base",
+    "name": "deep_research_knowledge_base",
     "description": (
         "Use this tool ONLY for complex, multi-part questions where standard search failed "
     "to find a complete answer. It uses a slower reasoning loop to verify document relevance."
@@ -77,33 +77,7 @@ DEEP_RESEARCH_SCHEMA = {
     },
 }
 
-DECOMPOSE_AND_SEARCH_SCHEMA = {
-    "name": "decompose_and_search",
-    "description": (
-        "Break a compound compliance query into simpler sub-questions and search each one via search_knowledge_base."
-    ),
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Compound compliance question to decompose and search.",
-            },
-            "category": {
-                "type": "string",
-                "description": "Optional filter. Use 'field_safety', 'emergency', or 'general'.",
-            },
-            "top_k": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 10,
-                "default": 3,
-            },
-        },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-}
+
 
 #HOTFIX: the task wanted all approaches to be seperate so i am going to isolate the logic ouf ot the tool for now
 #ofc according to the rubric we need to actually make a case on why hybrid is the effecient option here and
@@ -121,7 +95,7 @@ def search_knowledge_base(args: dict, cursor=None, session_role: str = "any") ->
     validation = validate_retrieval_and_answer(
         query=query,
         retrieved_contexts=contexts,
-        generated_answer="",
+        generated_answer=None,  # Skip support check when no answer is generated
         source="RAG",
     )
 
@@ -133,41 +107,7 @@ def search_knowledge_base(args: dict, cursor=None, session_role: str = "any") ->
     }
 
 
-def decompose_and_search(args: dict, cursor=None, session_role: str = "any") -> dict:
-    query = args.get("query")
-    if not query:
-        raise ValueError("query is required")
 
-    top_k = int(args.get("top_k", 3))
-    category = args.get("category")
-
-    class LLMProxy:
-        def complete(self, prompt: str) -> str:
-            response = MISTRAL_MODEL.chat.completions.create(
-                model="mistral-large",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-            )
-            return response.choices[0].message.content
-
-    def search_tool(query_text: str, tool_top_k: int = 3):
-        search_args = {"query": query_text, "top_k": tool_top_k}
-        if category:
-            search_args["category"] = category
-        output = search_knowledge_base(search_args, cursor=cursor, session_role=session_role)
-        return [(item.get("text", ""), float(item.get("score", 0.0)) if item.get("score") is not None else 0.0)
-                for item in output.get("results", [])]
-
-    tagged_results = combine_search(query, search_tool, LLMProxy(), top_k=top_k)
-    return {
-        "query": query,
-        "architecture_used": "Decomposed Hybrid Search",
-        "sub_questions": [result.sub_question for result in tagged_results],
-        "results": [
-            {"sub_question": result.sub_question, "chunk": result.chunk, "score": result.score}
-            for result in tagged_results
-        ],
-    }
 
 
 def deep_research_knowledge_base(args: dict, cursor=None, session_role: str = "any") -> dict:
@@ -183,7 +123,7 @@ def deep_research_knowledge_base(args: dict, cursor=None, session_role: str = "a
     validation = validate_retrieval_and_answer(
         query=query,
         retrieved_contexts=contexts,
-        generated_answer="",
+        generated_answer=None,  # Skip support check when no answer is generated
         source="RAG",
     )
 

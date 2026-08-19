@@ -76,7 +76,7 @@ def combine_search(query: str, search_tool, llm, top_k: int = 3) -> list[TaggedC
     results: list[TaggedChunk] = []
     for sub_q in sub_questions:
         hits = search_tool(sub_q, top_k)  # same call signature as your existing tool
-    print("=== decompose_and_search ===")
-    tagged_results = combine_search(demo_query, fake_search_knowledge_base, llm, top_k=2)
-    for r in tagged_results:
-        print(f"[{r.sub_question}] -> {r.chunk} (score={r.score})")
+        for chunk, score in hits:
+            results.append(TaggedChunk(sub_question=sub_q, chunk=chunk, score=score))
+    
+    return results
